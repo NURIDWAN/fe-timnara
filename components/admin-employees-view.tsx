@@ -1,0 +1,32 @@
+"use client";
+
+import Link from "next/link";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Pencil, Plus, Search, Trash2, UserCheck, UserX } from "lucide-react";
+import { useState } from "react";
+import { toast } from "sonner";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { apiFetch, apiFetchEnvelope, getPagination } from "@/lib/api/client";
+import type { Employee, ListResult, Pagination } from "@/lib/api/types";
+import { EmptyState, ErrorState, LoadingState, UnauthorizedState, getErrorMessage } from "@/components/page-states";
+import { PageHeader } from "@/components/page-header";
+import { hasPermission } from "@/lib/permissions";
+
+export function AdminEmployeesView({ permissions }: { permissions: string[] }) {
+  const queryClient = useQueryClient();
+  const [search, setSearch] = useState("");
+  const [submittedSearch, setSubmittedSearch] = useState("");
+  const canView = hasPermission(permissions, "employee.view");
+  const canManage = hasPermission(permissions, "employee.manage");
+  const employees = useQuery({ queryKey: ["employees", submittedSearch], queryFn: async () => { const query = submittedSearch ? `?search=${encodeURIComponent(submittedSearch)}&per_page=100` : "?per_page=100"; const response = await apiFetchEnvelope<Employee[]>(`employees${query}`); return { items: response.data ?? [], pagination: getPagination(response.meta) } satisfies ListResult<Employee>; }, enabled: canView });
+  const action = useMutation({ mutationFn: ({ type, employee }: { type: "delete" | "activate" | "deactivate"; employee: Employee }) => type === "delete" ? apiFetch<null>(`employees/${employee.id}`, { method: "DELETE" }) : apiFetch<Employee>(`employees/${employee.id}/${type}`, { method: "POST" }), onSuccess: async (_, variables) => { toast.success(variables.type === "delete" ? "Karyawan berhasil dihapus" : variables.type === "activate" ? "Karyawan diaktifkan" : "Karyawan dinonaktifkan"); await queryClient.invalidateQueries({ queryKey: ["employees"] }); }, onError: (error) => toast.error(getErrorMessage(error)) });
+  if (!canView) return <UnauthorizedState />;
+  return <div className="space-y-8"><div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"><PageHeader eyebrow="Master data" title="Karyawan" description="Kelola data induk dan relasi organisasi karyawan dalam tenant aktif." />{canManage ? <Button asChild><Link href="/admin/employees/new"><Plus className="mr-2 size-4" />Tambah karyawan</Link></Button> : null}</div><Card><CardHeader className="gap-4 sm:flex-row sm:items-center sm:justify-between"><CardTitle>Daftar karyawan</CardTitle><form className="flex w-full gap-2 sm:w-auto" onSubmit={(event) => { event.preventDefault(); setSubmittedSearch(search.trim()); }}><div className="relative flex-1 sm:w-64"><Search className="absolute left-3 top-2.5 size-4 text-muted-foreground" /><Input className="pl-9" placeholder="Cari nama atau nomor..." value={search} onChange={(event) => setSearch(event.target.value)} /></div><Button type="submit" variant="secondary">Cari</Button></form></CardHeader><CardContent>{employees.isLoading ? <LoadingState label="Memuat daftar karyawan" /> : employees.isError ? <ErrorState message={getErrorMessage(employees.error)} retry={() => void employees.refetch()} /> : employees.data?.items.length === 0 ? <EmptyState title="Belum ada karyawan" description="Data karyawan pada tenant ini akan muncul di sini." /> : <EmployeeTable employees={employees.data?.items ?? []} pagination={employees.data?.pagination} canManage={canManage} pending={action.isPending} onAction={(type, employee) => { if (window.confirm(type === "delete" ? `Hapus ${employee.full_name}?` : type === "activate" ? `Aktifkan ${employee.full_name}?` : `Nonaktifkan ${employee.full_name}?`)) action.mutate({ type, employee }); }} />}</CardContent></Card></div>;
+}
+
+function EmployeeTable({ employees, pagination, canManage, pending, onAction }: { employees: Employee[]; pagination?: Pagination; canManage: boolean; pending: boolean; onAction: (type: "delete" | "activate" | "deactivate", employee: Employee) => void }) {
+  return <div className="space-y-4"><div className="overflow-x-auto"><table className="w-full min-w-[880px] text-sm"><thead><tr className="border-b text-left text-xs uppercase tracking-wider text-muted-foreground"><th className="px-3 py-3 font-medium">Karyawan</th><th className="px-3 py-3 font-medium">Organisasi</th><th className="px-3 py-3 font-medium">Status</th><th className="px-3 py-3 font-medium">Bergabung</th><th className="px-3 py-3 text-right font-medium">Aksi</th></tr></thead><tbody>{employees.map((employee) => <tr key={employee.id} className="border-b last:border-0 hover:bg-muted/40"><td className="px-3 py-4"><Link href={`/admin/employees/${employee.id}`} className="font-medium hover:text-primary">{employee.full_name}</Link><p className="mt-1 text-xs text-muted-foreground">{employee.employee_number}{employee.email ? ` · ${employee.email}` : ""}</p></td><td className="px-3 py-4 text-muted-foreground">{employee.department.name}<p className="mt-1 text-xs">{employee.position.name} · {employee.branch.name}</p></td><td className="px-3 py-4"><Badge variant={employee.is_active ? "secondary" : "outline"}>{employee.is_active ? "Aktif" : "Nonaktif"}</Badge></td><td className="px-3 py-4 text-muted-foreground">{new Intl.DateTimeFormat("id-ID", { dateStyle: "medium" }).format(new Date(employee.join_date))}</td><td className="px-3 py-4"><div className="flex justify-end gap-1">{canManage ? <><Button asChild variant="ghost" size="icon-sm" title="Edit karyawan"><Link href={`/admin/employees/${employee.id}/edit`}><Pencil /></Link></Button><Button variant="ghost" size="icon-sm" title={employee.is_active ? "Nonaktifkan" : "Aktifkan"} disabled={pending} onClick={() => onAction(employee.is_active ? "deactivate" : "activate", employee)}>{employee.is_active ? <UserX /> : <UserCheck />}</Button><Button variant="ghost" size="icon-sm" title="Hapus karyawan" disabled={pending} onClick={() => onAction("delete", employee)}><Trash2 className="text-destructive" /></Button></> : null}</div></td></tr>)}</tbody></table></div>{pagination ? <p className="text-xs text-muted-foreground">Menampilkan {pagination.from ?? 0}–{pagination.to ?? 0} dari {pagination.total} karyawan</p> : null}</div>;
+}
